@@ -31,7 +31,7 @@ end
     x_new = x + alpha*d;
     f_new = problem.compute_f(x_new);
     g_new = problem.compute_g(x_new);
-    % BFGS computation of Hessian approx
+    % DFP computation of Hessian approx
     s = x_new - x;
     y = g_new - g;
     curve = transpose(s)*y;
