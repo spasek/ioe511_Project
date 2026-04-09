@@ -1,0 +1,45 @@
+function [x_new,f_new,g_new,H_new,d,alpha] = DFPStep(x,f,g,H,problem,method,options)
+
+% set BFGS curvature condition parameter
+epsilon_sy = method.options.epsilon_sy;
+
+% search direction is -H*g
+d = -H*g;
+
+% determine step size
+switch method.options.step_type
+   
+    case 'Backtracking'
+        % set line search parameters
+        alpha = method.options.constant_step_size;
+        tau = method.options.tau;
+        c1 = method.options.c1;
+
+        % determine step size via backtracking line search
+        x_trial = x + alpha*d;
+        f_trial = problem.compute_f(x_trial);
+
+        % loop until trial x value gives low enough function value
+        while f_trial > f + c1*alpha*transpose(g)*d
+            % scale alpha and update trial x and f
+            alpha = tau*alpha;
+            x_trial = x + alpha*d;
+            f_trial = problem.compute_f(x_trial);
+        end
+end
+    % update iterate
+    x_new = x + alpha*d;
+    f_new = problem.compute_f(x_new);
+    g_new = problem.compute_g(x_new);
+    % BFGS computation of Hessian approx
+    s = x_new - x;
+    y = g_new - g;
+    curve = transpose(s)*y;
+
+    if curve < epsilon_sy*norm(s)*norm(y)
+        H_new = H;
+    else
+        H_new = H - (H*(y*y')*H)/(y'*H*y) + (s*s')/curve;
+    end
+
+end
