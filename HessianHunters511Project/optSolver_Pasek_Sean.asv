@@ -1,0 +1,138 @@
+function [xk, fk, history] = optSolver_Pasek_Sean(problem, method, options)
+% Main optimization solver
+
+tic;
+xk        = problem.x0(:);
+alpha_bar = options.alpha_bar;
+c1        = options.c1;
+tau       = options.tau;
+max_iters = options.max_iters;
+tol       = options.tol;
+
+history.f_vals      = [];
+history.grad_norms  = [];
+history.alphas      = [];
+history.time        = 0;
+
+Hk = eye(length(xk));   % for BFGS
+S  = {};                % for L-BFGS
+Y  = {};
+
+for k = 1:max_iters
+    [f, g, H] = evalProblem(problem, xk);
+
+    history.f_vals(end+1)     = f;
+    history.grad_norms(end+1) = norm(g, inf);
+
+    % termination condition
+    if k == 1
+        grad0_inf = max(norm(g, inf), 1);
+    end
+    if norm(g, inf) <= grad0_inf * tol
+        break
+    end
+
+    if k == 1
+        Hk = eye(length(xk));
+    end
+
+ switch method.type
+    % ==================================================
+    % GRADIENT DESCENT
+    % ==================================================
+    case 'gd_bt'
+        d = -g;
+        alpha = backtracking(problem, xk, f, g, d, alpha_bar, c1, tau);
+        
+    case 'gd_wolfe'
+        d = -g;
+        alpha = wolfe_line_search(problem, xk, f, g, d, method.params);
+
+    % ==================================================
+    % MODIFIED NEWTON
+    % ==================================================
+    case {'newton_mod_bt', 'newton_mod_wolfe'}
+        % Regularize/Modify Hessian to ensure SPD
+        H = (H + H') / 2;
+        [H_mod, ~] = modifiedNewtonHessian(H, 1e-6);
+        d = -H_mod \ g;
+        
+        if method.type == "newton_mod_bt"
+            alpha = backtracking(problem, xk, f, g, d, alpha_bar, c1, tau);
+        else
+            alpha = wolfeLineSearch(problem, xk, f, g, d, method.params);
+        end
+
+    % ==================================================
+    % QUASI-NEWTON (BFGS & DFP)
+    % ==================================================
+    case {'bfgs_bt', 'bfgs_wolfe', 'dfp_bt', 'dfp_wolfe'}
+        d = -Hk * g;
+        if g' * d >= 0, d = -g; end % Descent safety
+        
+        if contains(method.type, '_bt')
+            alpha = backtracking(problem, xk, f, g, d, alpha_bar, c1, tau);
+        else
+            alpha = wolfeLineSearch(problem, xk, f, g, d, method.params);
+        end
+        
+        % Update x, f, g to get s and y for Hessian update
+        x_new = xk + alpha * d;
+        [f_new, g_new] = evalProblem(problem, x_new);
+        s = x_new - xk; y = g_new - g;
+        
+        % Curvature check (s'y > 0)
+        if s' * y > 1e-10 * norm(s) * norm(y)
+            rho = 1 / (y' * s);
+            I = eye(length(s));
+            if contains(method.type, 'bfgs')
+                Hk = (I - rho*s*y') * Hk * (I - rho*y*s') + rho*(s*s');
+            else % DFP
+                Hk = Hk - (Hk*y*y'*Hk)/(y'*Hk*y) + (s*s')/(y'*s);
+            end
+        end
+        % Update state for next iteration
+        xk = x_new; f = f_new; g = g_new;
+
+    % ==================================================
+    % TRUST REGION METHODS
+    % ==================================================
+    case 'cg_tr_newton'
+        % Steihaug-CG Trust Region using Modified Newton
+        H = (H + H') / 2;
+        [H_mod, ~] = modifiedNewtonHessian(H, 1e-6);
+        % Solve for step s within trust region delta
+        [s, tr_info] = trust_region_subproblem(g, H_mod, delta, 'cg');
+        % Update xk and delta based on ratio of actual/predicted reduction
+        [xk, f, g, delta] = update_tr_step(problem, xk, f, g, s, delta);
+
+    case 'sr1_tr'
+        % Symmetric Rank 1 Update with Trust Region
+        [s, tr_info] = trust_region_subproblem(g, Hk, delta, 'exact');
+        
+        x_new = xk + s;
+        [f_new, g_new] = evalProblem(problem, x_new);
+        y = g_new - g;
+        
+        % SR1 Update logic
+        if abs(s'*(y - Hk*s)) >= 1e-8 * norm(s) * norm(y - Hk*s)
+            Hk = Hk + ((y - Hk*s)*(y - Hk*s)') / ((y - Hk*s)'*s);
+        end
+        % TR management
+        [xk, f, g, delta] = update_tr_step(problem, xk, f, g, s, delta);
+
+    otherwise
+        error('Method not implemented.');
+end
+
+    history.alphas(end+1) = alpha;
+
+    % For methods that didn't already update xk inside the case
+    if ~ismember(method.type, {'bfgs','lbfgs'})
+        xk = xk + alpha * d;
+    end
+end
+
+[fk, ~, ~] = evalProblem(problem, xk);
+history.time = toc;
+end
